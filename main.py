@@ -1,4 +1,4 @@
-# main.py - V2 MULTI TIMEFRAME BOT + DAILY REPORT
+# main.py - V2 MULTI TIMEFRAME BOT + DAILY REPORT + PER-SYMBOL LOCK
 import os, time, threading, requests, json, datetime
 from flask import Flask
 from brain import MARKETS, analyze_all_tf, analyze_market
@@ -18,7 +18,6 @@ def send(msg):
 
 sent_signals = set()
 
-# --- DAILY TRACKING - NAVU ADD KARYU ---
 def load_trades():
     try:
         with open("trades.json","r") as f: return json.load(f)
@@ -28,6 +27,14 @@ def save_trades(trades):
     try:
         with open("trades.json","w") as f: json.dump(trades,f)
     except Exception as e: print("Save Error:", e)
+
+# --- NAVU FIX: SYMBOL BUSY CHE KE NAI? ---
+def is_symbol_busy(symbol):
+    trades = load_trades()
+    for t in trades:
+        if t.get("status") == "OPEN" and t.get("symbol") == symbol:
+            return True
+    return False
 
 def check_results():
     trades = load_trades()
@@ -43,7 +50,7 @@ def check_results():
                     t["status"]="WIN"; t["pnl"]=t["tp1"]-t["entry"]; changed=True
                 elif price <= t["sl"]:
                     t["status"]="LOSS"; t["pnl"]=t["sl"]-t["entry"]; changed=True
-            else: # SELL
+            else:
                 if price <= t["tp1"]:
                     t["status"]="WIN"; t["pnl"]=t["entry"]-t["tp1"]; changed=True
                 elif price >= t["sl"]:
@@ -73,15 +80,23 @@ def daily_report():
             f"🏆 Win %: {win_pct}%\n"
             f"💰 Total PnL: {round(total_pnl,2)}\n"
             f"📉 Max DD: {round(max_dd,2)}")
-# --- TRACKING PATYU ---
 
 def monitor_loop():
     print("V2 Monitor Started...")
     while True:
         try:
             for name, symbol in MARKETS.items():
+                # --- FIX: Aa symbol no trade pehla thi OPEN hoy to skip ---
+                if is_symbol_busy(symbol):
+                    print(f"Skip {symbol} - pehla trade OPEN che")
+                    continue
+
                 signals = analyze_all_tf(name, symbol)
                 for s in signals:
+                    # Double check - signal avta pehla pan check
+                    if is_symbol_busy(s['symbol']):
+                        print(f"Skip {s['symbol']} - busy")
+                        continue
                     key = f"{s['symbol']}-{s['tf']}-{s['type']}-{s['price']}"
                     if key in sent_signals: continue
                     sent_signals.add(key)
@@ -95,14 +110,12 @@ def monitor_loop():
                            f"Bias: {s['bias']}")
                     send(msg)
                     print("Sent:", key)
-                    # Trade save karo hisab mate
                     trades = load_trades()
-                    trades.append({"date":str(datetime.date.today()), "symbol":s['symbol'], "symbol_name":name, "type":s['type'], "entry":s['price'], "sl":s['sl'], "tp1":s['tp1'], "status":"OPEN", "pnl":0})
+                    trades.append({"date":str(datetime.date.today()), "symbol":s['symbol'], "symbol_name":name, "type":s['type'], "entry":s['price'], "sl":s['sl'], "tp1":s['tp1'], "status":"OPEN", "pnl":0, "tf":s['tf']})
                     save_trades(trades)
+                    break  # Ek symbol mathi ek j vaar ek signal - bija TF no mokalvu nahi
                 time.sleep(2)
-            # OPEN trade nu result check karo
             check_results()
-            # 5m mate 60 sec ma ek vaar check
             time.sleep(60)
         except Exception as e:
             print("Loop Error:", e)

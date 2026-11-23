@@ -1,5 +1,5 @@
-# main.py - V2 MULTI TIMEFRAME BOT
-import os, time, threading, requests
+# main.py - V2 MULTI TIMEFRAME BOT + DAILY REPORT
+import os, time, threading, requests, json, datetime
 from flask import Flask
 from brain import MARKETS, analyze_all_tf, analyze_market
 
@@ -17,6 +17,63 @@ def send(msg):
     except Exception as e: print("Send Error:", e)
 
 sent_signals = set()
+
+# --- DAILY TRACKING - NAVU ADD KARYU ---
+def load_trades():
+    try:
+        with open("trades.json","r") as f: return json.load(f)
+    except: return []
+
+def save_trades(trades):
+    try:
+        with open("trades.json","w") as f: json.dump(trades,f)
+    except Exception as e: print("Save Error:", e)
+
+def check_results():
+    trades = load_trades()
+    changed = False
+    for t in trades:
+        if t.get("status") != "OPEN": continue
+        try:
+            d = analyze_market(t["symbol_name"], t["symbol"])
+            if not d: continue
+            price = d['price']
+            if t["type"]=="BUY":
+                if price >= t["tp1"]:
+                    t["status"]="WIN"; t["pnl"]=t["tp1"]-t["entry"]; changed=True
+                elif price <= t["sl"]:
+                    t["status"]="LOSS"; t["pnl"]=t["sl"]-t["entry"]; changed=True
+            else: # SELL
+                if price <= t["tp1"]:
+                    t["status"]="WIN"; t["pnl"]=t["entry"]-t["tp1"]; changed=True
+                elif price >= t["sl"]:
+                    t["status"]="LOSS"; t["pnl"]=t["entry"]-t["sl"]; changed=True
+        except Exception as e:
+            print("Check Error:", e)
+    if changed: save_trades(trades)
+
+def daily_report():
+    trades = load_trades()
+    today = str(datetime.date.today())
+    todays = [t for t in trades if t.get("date")==today and t.get("status")!="OPEN"]
+    if not todays: return "📊 Aaje koi trade close nathi thayo."
+    wins = [t for t in todays if t["status"]=="WIN"]
+    losses = [t for t in todays if t["status"]=="LOSS"]
+    total = len(todays)
+    win_pct = round(len(wins)/total*100,1) if total else 0
+    total_pnl = sum(t.get("pnl",0) for t in todays)
+    max_dd = 0; cur_dd = 0
+    for t in todays:
+        if t["status"]=="LOSS":
+            cur_dd += abs(t.get("pnl",0)); max_dd = max(max_dd, cur_dd)
+        else: cur_dd = 0
+    return (f"📊 <b>DAILY REPORT - {today}</b>\n\n"
+            f"Total Trades: {total}\n"
+            f"✅ Win: {len(wins)} | ❌ Loss: {len(losses)}\n"
+            f"🏆 Win %: {win_pct}%\n"
+            f"💰 Total PnL: {round(total_pnl,2)}\n"
+            f"📉 Max DD: {round(max_dd,2)}")
+# --- TRACKING PATYU ---
 
 def monitor_loop():
     print("V2 Monitor Started...")
@@ -38,7 +95,13 @@ def monitor_loop():
                            f"Bias: {s['bias']}")
                     send(msg)
                     print("Sent:", key)
+                    # Trade save karo hisab mate
+                    trades = load_trades()
+                    trades.append({"date":str(datetime.date.today()), "symbol":s['symbol'], "symbol_name":name, "type":s['type'], "entry":s['price'], "sl":s['sl'], "tp1":s['tp1'], "status":"OPEN", "pnl":0})
+                    save_trades(trades)
                 time.sleep(2)
+            # OPEN trade nu result check karo
+            check_results()
             # 5m mate 60 sec ma ek vaar check
             time.sleep(60)
         except Exception as e:
@@ -60,8 +123,11 @@ def telegram_poll():
                         d = analyze_market(name, symbol)
                         if d: lines.append(f"{name}: {d['bias']} @ {d['price']}")
                     send("📊 <b>V2 STATUS (1h Bias)</b>\n\n" + "\n".join(lines))
+                elif "/report" in txt:
+                    check_results()
+                    send(daily_report())
                 elif "/start" in txt:
-                    send("👋 V2 Bot ON hai!\n5m ⚡ SCALP\n15m 📈 INTRADAY\n1h 🎯 SWING\n4h 🏔️ BIG SWING\n\n/status - check bias")
+                    send("👋 V2 Bot ON hai!\n5m ⚡ SCALP\n15m 📈 INTRADAY\n1h 🎯 SWING\n4h 🏔️ BIG SWING\n\n/status - check bias\n/report - daily report")
         except: time.sleep(5)
 
 if __name__ == "__main__":

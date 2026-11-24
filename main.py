@@ -8,10 +8,8 @@ import yfinance as yf
 from flask import Flask
 from brain import analyze_market
 
-# --- CONFIG ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
-# Render pe PORT auto milta hai
 PORT = int(os.environ.get("PORT", 10000))
 
 app = Flask(__name__)
@@ -23,7 +21,6 @@ def home():
 TRADES_FILE = "trades.json"
 SYMBOLS = ["GOLD", "BTC", "ETH", "NIFTY", "BANKNIFTY"]
 
-# --- HELPERS ---
 def load_trades():
     if not os.path.exists(TRADES_FILE):
         return []
@@ -48,7 +45,6 @@ def send(msg):
         print("Send Error:", e)
 
 def get_live_price(symbol):
-    # 5m live price - SL check ke liye
     ticker_map = {
         "GOLD": "GC=F",
         "BTC": "BTC-USD",
@@ -60,13 +56,18 @@ def get_live_price(symbol):
     if not ticker:
         return None
     try:
-        df = yf.download(ticker, period="1d", interval="5m", progress=False, auto_adjust=True)
-        if df.empty:
-            return None
-        # yfinance kabhi MultiIndex deta hai
-        if hasattr(df.columns, 'nlevels') and df.columns.nlevels > 1:
-            df.columns = df.columns.get_level_values(0)
-        return round(float(df["Close"].iloc[-1]), 3)
+        for _ in range(2):
+            try:
+                tk = yf.Ticker(ticker)
+                df = tk.history(period="1d", interval="5m", auto_adjust=True)
+                if df is not None and not df.empty:
+                    if hasattr(df.columns, 'nlevels') and df.columns.nlevels > 1:
+                        df.columns = df.columns.get_level_values(0)
+                    return round(float(df["Close"].iloc[-1]), 3)
+            except:
+                time.sleep(2)
+                continue
+        return None
     except Exception as e:
         print(f"Live Price Error {symbol}:", e)
         return None
@@ -82,7 +83,6 @@ def daily_report():
     total = len(todays)
     win_pct = round(len(wins)/total*100, 1) if total else 0
     total_pnl = sum(t.get("pnl", 0) for t in todays)
-
     lines = []
     for t in todays:
         if t["status"] == "WIN":
@@ -96,7 +96,6 @@ def daily_report():
             exit_price = t.get("entry", 0)
         pnl = t.get("pnl", 0)
         lines.append(f"{icon} {t['symbol']} {t['type']} {t.get('tf','')} | Entry {t['entry']:.3f} -> {exit_price:.3f} | PnL {pnl:.3f}")
-
     return (f"📊 <b>DAILY REPORT - {today}</b>\n\n"
             f"Total Trades: {total}\n"
             f"✅ Win: {len(wins)} | ❌ Loss: {len(losses)}\n"
@@ -104,7 +103,6 @@ def daily_report():
             f"💰 Total PnL: {total_pnl:.3f}\n\n"
             f"<b>--- DETAIL ---</b>\n" + "\n".join(lines))
 
-# --- CORE LOGIC ---
 def check_results():
     trades = load_trades()
     changed = False
@@ -114,8 +112,6 @@ def check_results():
         price = get_live_price(t["symbol"])
         if price is None:
             continue
-
-        # BUY Logic
         if t["type"] == "BUY":
             if price <= t["sl"]:
                 pnl = round(t["sl"] - t["entry"], 3)
@@ -129,7 +125,6 @@ def check_results():
                 t["pnl"] = pnl
                 changed = True
                 send(f"✅ <b>{t['symbol']} WIN - TP1 HIT</b>\nEntry {t['entry']:.3f} -> TP {t['tp1']:.3f}\n💰 Profit: {pnl:.3f}\nLive: {price:.3f}")
-        # SELL Logic
         else:
             if price >= t["sl"]:
                 pnl = round(t["entry"] - t["sl"], 3)
@@ -149,7 +144,6 @@ def check_results():
 def scan_and_signal():
     trades = load_trades()
     for sym in SYMBOLS:
-        # Agar us symbol ka trade OPEN hai to naya signal mat do
         open_exists = any(t["symbol"] == sym and t.get("status") == "OPEN" for t in trades)
         if open_exists:
             continue
@@ -160,9 +154,7 @@ def scan_and_signal():
             continue
         if not result or not result.get("signal"):
             continue
-
         s = result["signal"]
-        # Signal save karo
         new_trade = {
             "symbol": sym,
             "type": s["type"],
@@ -178,7 +170,6 @@ def scan_and_signal():
         }
         trades.append(new_trade)
         save_trades(trades)
-
         icon = "🟢" if s["type"] == "BUY" else "🔴"
         send(f"{icon} <b>{s['type']} {sym} | {s['tf']}</b>\n"
              f"📊 Reason: {s.get('reason','Sweep + BOS')}\n"
@@ -195,25 +186,18 @@ def bot_loop():
     while True:
         try:
             now = datetime.datetime.now()
-            # Har 1 min me SL/TP check - 5m live price se
             check_results()
-
-            # Har 5 min me scan
             if now.minute % 5 == 0 and now.minute != last_scan_min:
                 last_scan_min = now.minute
                 scan_and_signal()
-
-            # Raat 9 baje Daily Report
             if now.hour == 21 and now.minute == 0 and last_report_hour != now.hour:
                 last_report_hour = now.hour
                 send(daily_report())
-
             time.sleep(30)
         except Exception as e:
             print("Loop Error:", e)
             time.sleep(30)
 
-# --- TELEGRAM COMMANDS ---
 def handle_commands():
     offset = None
     print("Telegram Polling Started...")
@@ -231,7 +215,6 @@ def handle_commands():
                 text = msg.get("text", "").strip().lower()
                 if not text.startswith("/"):
                     continue
-
                 if text == "/start":
                     send("👋 V3 Bot Live Hai!\nCommands:\n/status - Live Price\n/open - Open Trades\n/closeall - Sab Bandh Karo\n/report - Aaj Ka Report")
                 elif text == "/status":
@@ -261,7 +244,6 @@ def handle_commands():
                     cnt = 0
                     for t in trades:
                         if t.get("status") == "OPEN":
-                            # Manual close = Breakeven 0 PnL
                             t["status"] = "CLOSED"
                             t["pnl"] = 0.0
                             cnt += 1

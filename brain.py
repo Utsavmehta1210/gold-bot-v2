@@ -1,5 +1,6 @@
 import pandas as pd
 import requests
+import re
 
 BINANCE_MAP = {
     "GOLD": "PAXGUSDT",
@@ -30,33 +31,82 @@ def fetch_binance(symbol, interval):
         print(f"Binance Error {symbol}: {e}")
         return None
 
-def fetch_nse(symbol, interval):
+def make_df_from_price(price):
+    # Sirf price mila to 60 row ka dummy df banao taaki /status me price to aaye
+    vals = [price]*60
+    df = pd.DataFrame({"Open":vals,"High":vals,"Low":vals,"Close":vals,"Volume":[0]*60})
+    return df
+
+def fetch_nifty_price(symbol):
+    # 1. Try NSE allIndices
     try:
         s = requests.Session()
-        h = {"User-Agent":"Mozilla/5.0","Accept":"application/json","Accept-Language":"en-US,en;q=0.9","Referer":"https://www.nseindia.com/"}
-        s.get("https://www.nseindia.com", headers=h, timeout=15)
-        if symbol == "NIFTY":
-            idx = "NIFTY 50"
-        else:
-            idx = "NIFTY BANK"
-        url = f"https://www.nseindia.com/api/chart-databyindex?index={idx}&indices=true"
-        r = s.get(url, headers=h, timeout=15)
-        if r.status_code != 200:
-            print(f"NSE {symbol} {r.status_code}")
-            return None
-        j = r.json()
-        data = j.get("grapthData", [])
-        if not data or len(data) < 50:
-            return None
-        df = pd.DataFrame(data, columns=["Time","Close"])
-        df["Open"] = df["Close"]
-        df["High"] = df["Close"]
-        df["Low"] = df["Close"]
-        df["Volume"] = 0
-        return df
+        h = {"User-Agent":"Mozilla/5.0","Accept":"application/json","Referer":"https://www.nseindia.com/"}
+        s.get("https://www.nseindia.com", headers=h, timeout=10)
+        r = s.get("https://www.nseindia.com/api/allIndices", headers=h, timeout=10)
+        if r.status_code == 200:
+            j = r.json()
+            for it in j.get("data", []):
+                name = it.get("index","")
+                if symbol == "NIFTY" and name == "NIFTY 50":
+                    return float(it["last"])
+                if symbol == "BANKNIFTY" and name == "NIFTY BANK":
+                    return float(it["last"])
     except Exception as e:
-        print(f"NSE Error {symbol}: {e}")
-        return None
+        print(f"NSE allIndices fail {symbol}: {e}")
+    # 2. Try Yahoo query2
+    try:
+        y = "%5ENSEI" if symbol == "NIFTY" else "%5ENSEBANK"
+        url = f"https://query2.finance.yahoo.com/v8/finance/chart/{y}?interval=15m&range=1d"
+        r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=10)
+        if r.status_code == 200:
+            j = r.json()
+            res = j["chart"]["result"][0]
+            meta = res.get("meta", {})
+            if "regularMarketPrice" in meta:
+                return float(meta["regularMarketPrice"])
+    except Exception as e:
+        print(f"Yahoo2 fail {symbol}: {e}")
+    # 3. Try Google Finance
+    try:
+        g = "NIFTY_50:INDEXNSE" if symbol == "NIFTY" else "NIFTY_BANK:INDEXNSE"
+        url = f"https://www.google.com/finance/quote/{g}"
+        r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=10)
+        if r.status_code == 200:
+            m = re.search(r'data-last-price="([\d,\.]+)"', r.text)
+            if m:
+                return float(m.group(1).replace(",",""))
+    except Exception as e:
+        print(f"Google fail {symbol}: {e}")
+    return None
+
+def fetch_nse(symbol, interval):
+    # Pehle full chart try karo
+    try:
+        s = requests.Session()
+        h = {"User-Agent":"Mozilla/5.0","Accept":"application/json","Referer":"https://www.nseindia.com/"}
+        s.get("https://www.nseindia.com", headers=h, timeout=10)
+        idx = "NIFTY 50" if symbol == "NIFTY" else "NIFTY BANK"
+        url = f"https://www.nseindia.com/api/chart-databyindex?index={idx}&indices=true"
+        r = s.get(url, headers=h, timeout=10)
+        if r.status_code == 200:
+            j = r.json()
+            data = j.get("grapthData", [])
+            if data and len(data) >= 50:
+                df = pd.DataFrame(data, columns=["Time","Close"])
+                df["Open"] = df["Close"]
+                df["High"] = df["Close"]
+                df["Low"] = df["Close"]
+                df["Volume"] = 0
+                return df
+    except Exception as e:
+        print(f"NSE chart fail {symbol}: {e}")
+    # Chart nahi mila to sirf price se kaam chalao
+    p = fetch_nifty_price(symbol)
+    if p:
+        print(f"{symbol} price-only fallback: {p}")
+        return make_df_from_price(p)
+    return None
 
 def get_df(symbol, period, interval):
     if symbol in BINANCE_MAP:

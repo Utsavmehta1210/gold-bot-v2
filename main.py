@@ -83,4 +83,53 @@ def daily_report():
     return (f"📊 <b>DAILY REPORT - {today}</b>\n\n"
             f"Total Trades: {total}\n"
             f"✅ Win: {len(wins)} | ❌ Loss: {len(losses)}\n"
-            f"🏆 Win %
+            f"🏆 Win %: {win_pct}%\n"
+            f"💰 Total PnL: {total_pnl:.3f}\n\n"
+            f"<b>--- DETAIL ---</b>\n" + "\n".join(lines))
+
+def check_results():
+    trades = load_trades()
+    changed = False
+    for t in trades:
+        if t.get("status") != "OPEN":
+            continue
+        price = get_live_price(t["symbol"])
+        if price is None:
+            continue
+        if t["type"] == "BUY":
+            if price <= t["sl"]:
+                pnl = round(t["sl"] - t["entry"], 3)
+                t["status"] = "LOSS"
+                t["pnl"] = pnl
+                changed = True
+                send(f"❌ <b>{t['symbol']} LOSS - SL HIT</b>\nEntry {t['entry']:.3f} -> SL {t['sl']:.3f}\n💸 Loss: {pnl:.3f}\nLive: {price:.3f}")
+            elif price >= t["tp1"]:
+                pnl = round(t["tp1"] - t["entry"], 3)
+                t["status"] = "WIN"
+                t["pnl"] = pnl
+                changed = True
+                send(f"✅ <b>{t['symbol']} WIN - TP1 HIT</b>\nEntry {t['entry']:.3f} -> TP {t['tp1']:.3f}\n💰 Profit: {pnl:.3f}\nLive: {price:.3f}")
+        else:
+            if price >= t["sl"]:
+                pnl = round(t["entry"] - t["sl"], 3)
+                t["status"] = "LOSS"
+                t["pnl"] = pnl
+                changed = True
+                send(f"❌ <b>{t['symbol']} LOSS - SL HIT</b>\nEntry {t['entry']:.3f} -> SL {t['sl']:.3f}\n💸 Loss: {pnl:.3f}\nLive: {price:.3f}")
+            elif price <= t["tp1"]:
+                pnl = round(t["entry"] - t["tp1"], 3)
+                t["status"] = "WIN"
+                t["pnl"] = pnl
+                changed = True
+                send(f"✅ <b>{t['symbol']} WIN - TP1 HIT</b>\nEntry {t['entry']:.3f} -> TP {t['tp1']:.3f}\n💰 Profit: {pnl:.3f}\nLive: {price:.3f}")
+    if changed:
+        save_trades(trades)
+
+def scan_and_signal():
+    trades = load_trades()
+    for sym in SYMBOLS:
+        open_exists = any(t["symbol"] == sym and t.get("status") == "OPEN" for t in trades)
+        if open_exists:
+            continue
+        try:
+            result = analyze_market(sym

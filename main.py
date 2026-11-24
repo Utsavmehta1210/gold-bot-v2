@@ -15,9 +15,7 @@ SYMBOLS = {
     "BANKNIFTY": "^NSEBANK"
 }
 
-# Har symbol ki alag trade - Ek dusre ko nahi rokegi
 active_trades = {name: None for name in SYMBOLS}
-# Report ke liye: har symbol ke pnl list
 daily_trades = {name: [] for name in SYMBOLS}
 CHAT_IDS = set()
 
@@ -76,7 +74,6 @@ def scanner_loop(app):
     while True:
         try:
             for name, ticker in SYMBOLS.items():
-                # 1. Agar trade chal rahi hai to SL / Target check karo
                 if active_trades[name] is not None:
                     trade = active_trades[name]
                     price = get_live_price(ticker)
@@ -91,7 +88,7 @@ def scanner_loop(app):
                         elif price >= trade['target']:
                             hit = "TP"
                             pnl = trade['tp_pct']
-                    else:  # SHORT
+                    else:
                         if price >= trade['sl']:
                             hit = "SL"
                             pnl = -trade['sl_pct']
@@ -108,7 +105,6 @@ def scanner_loop(app):
                             asyncio.run_coroutine_threadsafe(app.bot.send_message(chat_id=cid, text=msg), app.loop)
                     continue
 
-                # 2. Agar trade nahi chal rahi to naya signal dhoondo
                 sig = analyze(ticker)
                 if sig:
                     active_trades[name] = sig
@@ -129,4 +125,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("report", report_cmd))
     print("Bot Started...")
-    app.run_polling()
+    # YE LINE FIX HAI - Conflict error dobara nahi aayega
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)

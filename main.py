@@ -118,18 +118,4 @@ def check_results():
                 send(f"❌ <b>{t['symbol']} LOSS - SL HIT</b>\nEntry {t['entry']:.3f} -> SL {t['sl']:.3f}\n💸 Loss: {pnl:.3f}\nLive: {price:.3f}")
             elif price <= t["tp1"]:
                 pnl = round(t["entry"] - t["tp1"], 3)
-                t["status"] = "WIN"
-                t["pnl"] = pnl
-                changed = True
-                send(f"✅ <b>{t['symbol']} WIN - TP1 HIT</b>\nEntry {t['entry']:.3f} -> TP {t['tp1']:.3f}\n💰 Profit: {pnl:.3f}\nLive: {price:.3f}")
-    if changed:
-        save_trades(trades)
-
-def scan_and_signal():
-    trades = load_trades()
-    for sym in SYMBOLS:
-        open_exists = any(t["symbol"] == sym and t.get("status") == "OPEN" for t in trades)
-        if open_exists:
-            continue
-        try:
-            result = analyze_market(sym
+                t["status"] = "WIN

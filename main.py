@@ -1,9 +1,4 @@
-import os
-import json
-import time
-import datetime
-import threading
-import requests
+import os, json, time, datetime, threading, requests
 from flask import Flask
 from brain import analyze_market, get_df
 
@@ -17,8 +12,10 @@ def home():
     return "V3 Bot Running"
 
 TRADES_FILE = "trades.json"
+# 1 WALA SETUP - 5 SYMBOL, BTC SATH ME
 SYMBOLS = ["GOLD", "BTC", "ETH", "NIFTY", "BANKNIFTY"]
 MAP = {"GOLD": "PAXGUSDT", "BTC": "BTCUSDT", "ETH": "ETHUSDT"}
+last_signal = {}
 
 def load_trades():
     if not os.path.exists(TRADES_FILE):
@@ -72,12 +69,16 @@ def daily_report():
     losses = [t for t in todays if t["status"] == "LOSS"]
     total = len(todays)
     wp = round(len(wins)/total*100, 1) if total else 0
-    pnl = sum(t.get("pnl", 0) for t in todays)
+    # PnL % ME - BTC ka bada point ab sahi dikhega
+    total_pct = 0
     txt = f"DAILY REPORT {today}\n"
     txt += f"Total: {total} Win: {len(wins)} Loss: {len(losses)}\n"
-    txt += f"Win%: {wp}% PnL: {pnl:.3f}\n"
+    txt += f"Win%: {wp}%\n"
     for t in todays:
-        txt += f"{t['symbol']} {t['type']} PnL {t.get('pnl',0):.3f}\n"
+        pct = round((t.get("pnl",0)/t["entry"]*100), 3) if t["entry"] else 0
+        total_pct += pct
+        txt += f"{t['symbol']} {t['type']} PnL {pct}% ({t.get('pnl',0):.3f} pts)\n"
+    txt += f"Total PnL: {total_pct:.3f}%"
     return txt
 
 def check_results():
@@ -89,40 +90,23 @@ def check_results():
         price = get_live_price(t["symbol"])
         if price is None:
             continue
-        e = t["entry"]
-        sl = t["sl"]
-        tp = t["tp1"]
-        sym = t["symbol"]
+        e = t["entry"]; sl = t["sl"]; tp = t["tp1"]; sym = t["symbol"]
+        hit = None
         if t["type"] == "BUY":
             if price <= sl:
-                t["status"] = "LOSS"
-                t["pnl"] = round(sl - e, 3)
-                changed = True
-                m = f"{sym} LOSS SL HIT\n"
-                m += f"Entry {e} SL {sl} Live {price}"
-                send(m)
+                t["status"] = "LOSS"; t["pnl"] = round(sl - e, 3); hit = "LOSS"
             elif price >= tp:
-                t["status"] = "WIN"
-                t["pnl"] = round(tp - e, 3)
-                changed = True
-                m = f"{sym} WIN TP HIT\n"
-                m += f"Entry {e} TP {tp} Live {price}"
-                send(m)
+                t["status"] = "WIN"; t["pnl"] = round(tp - e, 3); hit = "WIN"
         else:
             if price >= sl:
-                t["status"] = "LOSS"
-                t["pnl"] = round(e - sl, 3)
-                changed = True
-                m = f"{sym} LOSS SL HIT\n"
-                m += f"Entry {e} SL {sl} Live {price}"
-                send(m)
+                t["status"] = "LOSS"; t["pnl"] = round(e - sl, 3); hit = "LOSS"
             elif price <= tp:
-                t["status"] = "WIN"
-                t["pnl"] = round(e - tp, 3)
-                changed = True
-                m = f"{sym} WIN TP HIT\n"
-                m += f"Entry {e} TP {tp} Live {price}"
-                send(m)
+                t["status"] = "WIN"; t["pnl"] = round(e - tp, 3); hit = "WIN"
+        if hit:
+            changed = True
+            t["close_time"] = datetime.datetime.now().strftime("%H:%M:%S")
+            m = f"{sym} {hit} {'SL' if hit=='LOSS' else 'TP'} HIT\nEntry {e} Live {price}"
+            send(m)
     if changed:
         save_trades(trades)
 
@@ -130,6 +114,20 @@ def scan_and_signal():
     trades = load_trades()
     for sym in SYMBOLS:
         has = any(t["symbol"] == sym and t.get("status") == "OPEN" for t in trades)
+        if has:
+            continue
+        # 30 min Cooldown - Ek hi price pe Buy-Sell nahi hoga
+        now_dt = datetime.datetime.now()
+        for t in reversed(trades):
+            if t["symbol"] == sym and t.get("status") in ["WIN","LOSS"] and t.get("date") == str(datetime.date.today()) and t.get("close_time"):
+                try:
+                    ct = datetime.datetime.strptime(t["close_time"], "%H:%M:%S").replace(year=now_dt.year, month=now_dt.month, day=now_dt.day)
+                    if (now_dt - ct).total_seconds() < 1800:
+                        print(f"Cooldown {sym}, skip")
+                        has = True
+                        break
+                except:
+                    pass
         if has:
             continue
         try:
@@ -140,46 +138,37 @@ def scan_and_signal():
         if not res or not res.get("signal"):
             continue
         s = res["signal"]
+        # Same Price Filter
+        if sym in last_signal:
+            lp, lt = last_signal[sym]
+            if (now_dt - lt).total_seconds() < 3600 and abs(s["price"]-lp)/lp*100 < 0.1:
+                print(f"Same price skip {sym} {s['price']} vs {lp}")
+                continue
+        last_signal[sym] = (float(s["price"]), now_dt)
         nt = {}
-        nt["symbol"] = sym
-        nt["type"] = s["type"]
-        nt["tf"] = s["tf"]
-        nt["entry"] = round(float(s["price"]), 3)
-        nt["sl"] = round(float(s["sl"]), 3)
-        nt["tp1"] = round(float(s["tp1"]), 3)
-        nt["tp2"] = round(float(s["tp2"]), 3)
-        nt["status"] = "OPEN"
-        nt["pnl"] = 0.0
-        nt["date"] = str(datetime.date.today())
-        nt["time"] = datetime.datetime.now().strftime("%H:%M:%S")
-        trades.append(nt)
-        save_trades(trades)
-        m = f"{s['type']} {sym} {s['tf']}\n"
-        m += f"Entry {s['price']:.3f}\n"
-        m += f"SL {s['sl']:.3f}\n"
-        m += f"TP1 {s['tp1']:.3f}\n"
-        m += f"TP2 {s['tp2']:.3f}\n"
-        m += f"Bias {res.get('bias','-')}"
+        nt["symbol"] = sym; nt["type"] = s["type"]; nt["tf"] = s["tf"]
+        nt["entry"] = round(float(s["price"]), 3); nt["sl"] = round(float(s["sl"]), 3)
+        nt["tp1"] = round(float(s["tp1"]), 3); nt["tp2"] = round(float(s["tp2"]), 3)
+        nt["status"] = "OPEN"; nt["pnl"] = 0.0; nt["date"] = str(datetime.date.today())
+        nt["time"] = now_dt.strftime("%H:%M:%S")
+        trades.append(nt); save_trades(trades)
+        m = f"{s['type']} {sym} {s['tf']}\nEntry {s['price']:.3f}\nSL {s['sl']:.3f}\nTP1 {s['tp1']:.3f}\nTP2 {s['tp2']:.3f}\nBias {res.get('bias','-')}"
         send(m)
 
 def bot_loop():
     print("V3 Monitor Started...")
-    last_scan = -1
-    last_rep = -1
+    last_scan = -1; last_rep = -1
     while True:
         try:
             now = datetime.datetime.now()
             check_results()
             if now.minute % 5 == 0 and now.minute != last_scan:
-                last_scan = now.minute
-                scan_and_signal()
+                last_scan = now.minute; scan_and_signal()
             if now.hour == 21 and now.minute == 0 and last_rep != now.hour:
-                last_rep = now.hour
-                send(daily_report())
+                last_rep = now.hour; send(daily_report())
             time.sleep(30)
         except Exception as e:
-            print("Loop Error:", e)
-            time.sleep(30)
+            print("Loop Error:", e); time.sleep(30)
 
 def handle_commands():
     offset = None
@@ -188,16 +177,14 @@ def handle_commands():
         try:
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
             p = {"timeout": 30}
-            if offset:
-                p["offset"] = offset
+            if offset: p["offset"] = offset
             r = requests.get(url, params=p, timeout=35)
             data = r.json()
             for upd in data.get("result", []):
                 offset = upd["update_id"] + 1
                 msg = upd.get("message", {})
                 text = msg.get("text", "").strip().lower()
-                if not text.startswith("/"):
-                    continue
+                if not text.startswith("/"): continue
                 if text == "/start":
                     send("V3 Bot Live\n/status /open /closeall /report")
                 elif text == "/status":
@@ -205,39 +192,25 @@ def handle_commands():
                     for sym in SYMBOLS:
                         try:
                             res = analyze_market(sym)
-                            if res:
-                                lines.append(f"{sym}: {res['price']} Bias {res['bias']}")
-                            else:
-                                lines.append(f"{sym}: No Data")
+                            lines.append(f"{sym}: {res['price']} Bias {res['bias']}" if res else f"{sym}: No Data")
                         except:
                             lines.append(f"{sym}: Error")
                     send("STATUS\n" + "\n".join(lines))
                 elif text == "/open":
                     trades = load_trades()
                     opens = [t for t in trades if t.get("status") == "OPEN"]
-                    if not opens:
-                        send("Koi OPEN trade nahi")
-                    else:
-                        txt = "OPEN TRADES\n"
-                        for t in opens:
-                            txt += f"{t['symbol']} {t['type']} E {t['entry']} SL {t['sl']} TP {t['tp1']}\n"
-                        send(txt)
+                    send("Koi OPEN trade nahi" if not opens else "OPEN TRADES\n" + "\n".join([f"{t['symbol']} {t['type']} E {t['entry']} SL {t['sl']} TP {t['tp1']}" for t in opens]))
                 elif text == "/closeall":
-                    trades = load_trades()
-                    cnt = 0
+                    trades = load_trades(); cnt = 0
                     for t in trades:
                         if t.get("status") == "OPEN":
-                            t["status"] = "CLOSED"
-                            t["pnl"] = 0.0
-                            cnt += 1
-                    save_trades(trades)
-                    send(f"{cnt} trade bandh kiye")
+                            t["status"] = "CLOSED"; t["pnl"] = 0.0; cnt += 1
+                    save_trades(trades); send(f"{cnt} trade bandh kiye")
                 elif text == "/report":
                     send(daily_report())
             time.sleep(1)
         except Exception as e:
-            print("Polling Error:", e)
-            time.sleep(5)
+            print("Polling Error:", e); time.sleep(5)
 
 if __name__ == "__main__":
     threading.Thread(target=bot_loop, daemon=True).start()

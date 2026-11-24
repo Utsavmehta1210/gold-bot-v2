@@ -12,7 +12,6 @@ def home():
     return "V3 Bot Running"
 
 TRADES_FILE = "trades.json"
-# 1 WALA SETUP - 5 SYMBOL, BTC SATH ME
 SYMBOLS = ["GOLD", "BTC", "ETH", "NIFTY", "BANKNIFTY"]
 MAP = {"GOLD": "PAXGUSDT", "BTC": "BTCUSDT", "ETH": "ETHUSDT"}
 last_signal = {}
@@ -69,7 +68,6 @@ def daily_report():
     losses = [t for t in todays if t["status"] == "LOSS"]
     total = len(todays)
     wp = round(len(wins)/total*100, 1) if total else 0
-    # PnL % ME - BTC ka bada point ab sahi dikhega
     total_pct = 0
     txt = f"DAILY REPORT {today}\n"
     txt += f"Total: {total} Win: {len(wins)} Loss: {len(losses)}\n"
@@ -116,14 +114,12 @@ def scan_and_signal():
         has = any(t["symbol"] == sym and t.get("status") == "OPEN" for t in trades)
         if has:
             continue
-        # 30 min Cooldown - Ek hi price pe Buy-Sell nahi hoga
         now_dt = datetime.datetime.now()
         for t in reversed(trades):
             if t["symbol"] == sym and t.get("status") in ["WIN","LOSS"] and t.get("date") == str(datetime.date.today()) and t.get("close_time"):
                 try:
                     ct = datetime.datetime.strptime(t["close_time"], "%H:%M:%S").replace(year=now_dt.year, month=now_dt.month, day=now_dt.day)
                     if (now_dt - ct).total_seconds() < 1800:
-                        print(f"Cooldown {sym}, skip")
                         has = True
                         break
                 except:
@@ -138,11 +134,9 @@ def scan_and_signal():
         if not res or not res.get("signal"):
             continue
         s = res["signal"]
-        # Same Price Filter
         if sym in last_signal:
             lp, lt = last_signal[sym]
             if (now_dt - lt).total_seconds() < 3600 and abs(s["price"]-lp)/lp*100 < 0.1:
-                print(f"Same price skip {sym} {s['price']} vs {lp}")
                 continue
         last_signal[sym] = (float(s["price"]), now_dt)
         nt = {}
@@ -172,47 +166,3 @@ def bot_loop():
 
 def handle_commands():
     offset = None
-    print("Polling Started...")
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-            p = {"timeout": 30}
-            if offset: p["offset"] = offset
-            r = requests.get(url, params=p, timeout=35)
-            data = r.json()
-            for upd in data.get("result", []):
-                offset = upd["update_id"] + 1
-                msg = upd.get("message", {})
-                text = msg.get("text", "").strip().lower()
-                if not text.startswith("/"): continue
-                if text == "/start":
-                    send("V3 Bot Live\n/status /open /closeall /report")
-                elif text == "/status":
-                    lines = []
-                    for sym in SYMBOLS:
-                        try:
-                            res = analyze_market(sym)
-                            lines.append(f"{sym}: {res['price']} Bias {res['bias']}" if res else f"{sym}: No Data")
-                        except:
-                            lines.append(f"{sym}: Error")
-                    send("STATUS\n" + "\n".join(lines))
-                elif text == "/open":
-                    trades = load_trades()
-                    opens = [t for t in trades if t.get("status") == "OPEN"]
-                    send("Koi OPEN trade nahi" if not opens else "OPEN TRADES\n" + "\n".join([f"{t['symbol']} {t['type']} E {t['entry']} SL {t['sl']} TP {t['tp1']}" for t in opens]))
-                elif text == "/closeall":
-                    trades = load_trades(); cnt = 0
-                    for t in trades:
-                        if t.get("status") == "OPEN":
-                            t["status"] = "CLOSED"; t["pnl"] = 0.0; cnt += 1
-                    save_trades(trades); send(f"{cnt} trade bandh kiye")
-                elif text == "/report":
-                    send(daily_report())
-            time.sleep(1)
-        except Exception as e:
-            print("Polling Error:", e); time.sleep(5)
-
-if __name__ == "__main__":
-    threading.Thread(target=bot_loop, daemon=True).start()
-    threading.Thread(target=handle_commands, daemon=True).start()
-    app.run(host="0.0.0.0", port=PORT)

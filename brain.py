@@ -32,13 +32,11 @@ def fetch_binance(symbol, interval):
         return None
 
 def make_df_from_price(price):
-    # Sirf price mila to 60 row ka dummy df banao taaki /status me price to aaye
     vals = [price]*60
     df = pd.DataFrame({"Open":vals,"High":vals,"Low":vals,"Close":vals,"Volume":[0]*60})
     return df
 
 def fetch_nifty_price(symbol):
-    # 1. Try NSE allIndices
     try:
         s = requests.Session()
         h = {"User-Agent":"Mozilla/5.0","Accept":"application/json","Referer":"https://www.nseindia.com/"}
@@ -54,7 +52,6 @@ def fetch_nifty_price(symbol):
                     return float(it["last"])
     except Exception as e:
         print(f"NSE allIndices fail {symbol}: {e}")
-    # 2. Try Yahoo query2
     try:
         y = "%5ENSEI" if symbol == "NIFTY" else "%5ENSEBANK"
         url = f"https://query2.finance.yahoo.com/v8/finance/chart/{y}?interval=15m&range=1d"
@@ -67,7 +64,6 @@ def fetch_nifty_price(symbol):
                 return float(meta["regularMarketPrice"])
     except Exception as e:
         print(f"Yahoo2 fail {symbol}: {e}")
-    # 3. Try Google Finance
     try:
         g = "NIFTY_50:INDEXNSE" if symbol == "NIFTY" else "NIFTY_BANK:INDEXNSE"
         url = f"https://www.google.com/finance/quote/{g}"
@@ -81,7 +77,6 @@ def fetch_nifty_price(symbol):
     return None
 
 def fetch_nse(symbol, interval):
-    # Pehle full chart try karo
     try:
         s = requests.Session()
         h = {"User-Agent":"Mozilla/5.0","Accept":"application/json","Referer":"https://www.nseindia.com/"}
@@ -101,7 +96,6 @@ def fetch_nse(symbol, interval):
                 return df
     except Exception as e:
         print(f"NSE chart fail {symbol}: {e}")
-    # Chart nahi mila to sirf price se kaam chalao
     p = fetch_nifty_price(symbol)
     if p:
         print(f"{symbol} price-only fallback: {p}")
@@ -115,9 +109,33 @@ def get_df(symbol, period, interval):
         return fetch_nse(symbol, interval)
     return None
 
-def analyze_one_tf(symbol, tf):
+def check_ob(df, direction):
+    try:
+        closes = df["Close"].values
+        opens = df["Open"].values
+        lows = df["Low"].values
+        highs = df["High"].values
+        curr = float(closes[-1])
+        for i in range(len(df)-20, len(df)-2):
+            if direction == "BUY":
+                if opens[i] > closes[i]:
+                    ob_low = float(lows[i])
+                    ob_high = float(highs[i])
+                    if curr > ob_low and abs(curr - ob_high)/curr*100 < 1.5:
+                        return True, ob_low
+            else:
+                if opens[i] < closes[i]:
+                    ob_low = float(lows[i])
+                    ob_high = float(highs[i])
+                    if curr < ob_high and abs(curr - ob_low)/curr*100 < 1.5:
+                        return True, ob_high
+        return False, None
+    except:
+        return False, None
+
+def analyze_one_tf(symbol, tf, bias_1h):
     df = get_df(symbol, "", tf)
-    if df is None:
+    if df is None or len(df) < 50:
         return None
     curr = float(df["Close"].iloc[-1])
     high = df["High"]
@@ -134,14 +152,18 @@ def analyze_one_tf(symbol, tf):
     if atr <= 0:
         atr = curr * 0.002
     risk = round(atr, 3)
-    if sl_low or (bos_up and pl < rl):
+    if (sl_low or bos_up) and bias_1h == "BULLISH":
+        ob_ok, ob_level = check_ob(df, "BUY")
+        if not ob_ok:
+            return None
         sl = round(curr - risk, 3)
-        rs = "Sweep Low + BOS Up" if sl_low else "BOS Up"
-        return {"type":"BUY","tf":tf,"price":round(curr,3),"sl":sl,"tp1":round(curr+ risk*1.5,3),"tp2":round(curr+ risk*2.5,3),"reason":rs}
-    if sw_high or (bos_down and ph > rh):
+        return {"type":"BUY","tf":tf,"price":round(curr,3),"sl":sl,"tp1":round(curr+ risk*1.5,3),"tp2":round(curr+ risk*3,3),"reason":"STRONG Sweep + OB + BOS Up"}
+    if (sw_high or bos_down) and bias_1h == "BEARISH":
+        ob_ok, ob_level = check_ob(df, "SELL")
+        if not ob_ok:
+            return None
         sl = round(curr + risk, 3)
-        rs = "Sweep High + BOS Down" if sw_high else "BOS Down"
-        return {"type":"SELL","tf":tf,"price":round(curr,3),"sl":sl,"tp1":round(curr- risk*1.5,3),"tp2":round(curr- risk*2.5,3),"reason":rs}
+        return {"type":"SELL","tf":tf,"price":round(curr,3),"sl":sl,"tp1":round(curr- risk*1.5,3),"tp2":round(curr- risk*3,3),"reason":"STRONG Sweep + OB + BOS Down"}
     return None
 
 def analyze_market(symbol):
@@ -152,14 +174,11 @@ def analyze_market(symbol):
     avg50 = float(df_1h["Close"].iloc[-50:].mean())
     bias = "BULLISH" if curr > avg50 else "BEARISH"
     signal = None
+    tf_found = None
     for tf in ["15m", "5m", "1h"]:
-        s = analyze_one_tf(symbol, tf)
+        s = analyze_one_tf(symbol, tf, bias)
         if s:
-            if tf == "1h":
-                if bias == "BULLISH" and s["type"] == "SELL":
-                    continue
-                if bias == "BEARISH" and s["type"] == "BUY":
-                    continue
             signal = s
+            tf_found = tf
             break
-    return {"bias":bias,"price":round(curr,3),"signal":signal,"tf":tf if signal else None}
+    return {"bias":bias,"price":round(curr,3),"signal":signal,"tf":tf_found}

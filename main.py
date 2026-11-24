@@ -5,8 +5,28 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from brain import analyze
 import os
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "PASTE_YAHAN_APNA_TOKEN")
+
+# --- RENDER FREE WEB SERVICE KE LIYE PORT FIX ---
+# Ye chhota server Render ko dikhayega ki Port khula hai, taaki Deploy Fail na ho
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is Running")
+    def log_message(self, format, *args):
+        return
+
+def keep_alive():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    print(f"Port Server Started on {port}")
+    server.serve_forever()
+
+threading.Thread(target=keep_alive, daemon=True).start()
+# --- PORT FIX KHATAM ---
 
 SYMBOLS = {
     "GOLD": "GC=F",

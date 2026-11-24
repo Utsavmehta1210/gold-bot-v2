@@ -1,4 +1,4 @@
-# brain.py - V2 MULTI TIMEFRAME BRAIN
+# brain.py - V3 FINAL BRAIN
 import yfinance as yf
 import pandas as pd
 
@@ -24,7 +24,8 @@ def get_data(symbol, tf):
         df = df.resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         return df
     else:
-        period = "1d" if tf=="5m" else "2d" if tf=="15m" else "5d"
+        # FIX: 5m ke liye 2d liya, taaki subah bhi 50+ candle mile
+        period = "2d" if tf=="5m" else "5d" if tf=="15m" else "5d"
         df = yf.download(symbol, period=period, interval=tf, progress=False)
         if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex):
@@ -80,3 +81,16 @@ def analyze_all_tf(name, symbol):
         if r and r['signal']:
             results.append(r['signal'])
     return results
+
+# --- NAYA: SL/TP check ke liye LIVE price (5m) ---
+def get_live_price(name, ticker):
+    try:
+        df = get_data(ticker, "5m")
+        if df is not None and len(df) > 0:
+            return float(df['Close'].iloc[-1])
+    except: pass
+    try:
+        d = analyze_one_tf(name, ticker, "1h")
+        if d: return d['price']
+    except: pass
+    return None

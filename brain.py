@@ -1,62 +1,46 @@
 import pandas as pd
 import requests
-import time
 
-TICKER_MAP = {
-    "GOLD": "GC=F",
-    "BTC": "BTC-USD",
-    "ETH": "ETH-USD",
-    "NIFTY": "^NSEI",
-    "BANKNIFTY": "^NSEBANK"
+# GOLD = PAXG (Binance pe Gold ka coin), BTC, ETH - sab Binance se
+BINANCE_MAP = {
+    "GOLD": "PAXGUSDT",
+    "BTC": "BTCUSDT",
+    "ETH": "ETHUSDT",
 }
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
-def fetch_yahoo(ticker, period, interval):
-    # Direct Yahoo API - yfinance se alag, Render pe bhi chalta hai
-    urls = [
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range={period}&interval={interval}",
-        f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?range={period}&interval={interval}"
-    ]
-    for url in urls:
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=15)
-            if r.status_code != 200:
-                continue
-            j = r.json()
-            res = j.get("chart", {}).get("result", [])
-            if not res:
-                continue
-            data = res[0]
-            ts = data.get("timestamp", [])
-            q = data.get("indicators", {}).get("quote", [{}])[0]
-            if not ts or not q.get("close"):
-                continue
-            df = pd.DataFrame({
-                "Open": q.get("open"),
-                "High": q.get("high"),
-                "Low": q.get("low"),
-                "Close": q.get("close"),
-                "Volume": q.get("volume"),
-            })
-            df = df.dropna()
-            if len(df) >= 20:
-                return df
-        except Exception as e:
-            print(f"Yahoo Fetch Fail {ticker}: {e}")
-            continue
-    return None
+def fetch_binance(symbol, interval):
+    bin_sym = BINANCE_MAP.get(symbol)
+    if not bin_sym:
+        return None
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={bin_sym}&interval={interval}&limit=200"
+        r = requests.get(url, timeout=15)
+        if r.status_code != 200:
+            print(f"Binance Fail {symbol}: {r.status_code}")
+            return None
+        data = r.json()
+        if not data:
+            return None
+        df = pd.DataFrame(data, columns=["OpenTime","Open","High","Low","Close","Volume","CloseTime","QV","Trades","TBV","TQV","Ignore"])
+        for c in ["Open","High","Low","Close","Volume"]:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+        df = df.dropna()
+        if len(df) < 50:
+            return None
+        return df
+    except Exception as e:
+        print(f"Binance Error {symbol}: {e}")
+        return None
 
 def get_df(symbol, period, interval):
-    ticker = TICKER_MAP.get(symbol)
-    if not ticker:
-        return None
-    return fetch_yahoo(ticker, period, interval)
+    # period ignore karte hai, Binance se direct interval lete hai
+    interval_map = {"5m": "5m", "15m": "15m", "1h": "1h", "60m": "1h"}
+    bi = interval_map.get(interval, interval)
+    return fetch_binance(symbol, bi)
 
 def analyze_one_tf(symbol, tf):
-    period_map = {"5m": "5d", "15m": "10d", "1h": "1mo"}
-    interval_map = {"5m": "5m", "15m": "15m", "1h": "60m"}
-    df = get_df(symbol, period_map.get(tf, "10d"), interval_map.get(tf, "15m"))
+    interval_map = {"5m": "5m", "15m": "15m", "1h": "1h"}
+    df = get_df(symbol, "", interval_map.get(tf, "15m"))
     if df is None:
         return None
     curr = float(df["Close"].iloc[-1])
@@ -83,7 +67,7 @@ def analyze_one_tf(symbol, tf):
     return None
 
 def analyze_market(symbol):
-    df_1h = get_df(symbol, "1mo", "60m")
+    df_1h = get_df(symbol, "", "1h")
     if df_1h is None:
         return None
     curr = float(df_1h["Close"].iloc[-1])

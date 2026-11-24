@@ -6,10 +6,6 @@ BINANCE_MAP = {
     "BTC": "BTCUSDT",
     "ETH": "ETHUSDT",
 }
-YAHOO_MAP = {
-    "NIFTY": "%5ENSEI",
-    "BANKNIFTY": "%5ENSEBANK",
-}
 
 def fetch_binance(symbol, interval):
     bin_sym = BINANCE_MAP.get(symbol)
@@ -34,35 +30,39 @@ def fetch_binance(symbol, interval):
         print(f"Binance Error {symbol}: {e}")
         return None
 
-def fetch_yahoo(symbol, interval):
-    y_sym = YAHOO_MAP.get(symbol)
-    if not y_sym:
-        return None
+def fetch_nse(symbol, interval):
     try:
-        iv = {"5m":"5m","15m":"15m","1h":"60m"}.get(interval,"15m")
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{y_sym}?interval={iv}&range=5d"
-        h = {"User-Agent":"Mozilla/5.0"}
-        r = requests.get(url, headers=h, timeout=15)
+        s = requests.Session()
+        h = {"User-Agent":"Mozilla/5.0","Accept":"application/json","Accept-Language":"en-US,en;q=0.9","Referer":"https://www.nseindia.com/"}
+        s.get("https://www.nseindia.com", headers=h, timeout=15)
+        if symbol == "NIFTY":
+            idx = "NIFTY 50"
+        else:
+            idx = "NIFTY BANK"
+        url = f"https://www.nseindia.com/api/chart-databyindex?index={idx}&indices=true"
+        r = s.get(url, headers=h, timeout=15)
         if r.status_code != 200:
-            print(f"Yahoo {symbol} {r.status_code}")
+            print(f"NSE {symbol} {r.status_code}")
             return None
         j = r.json()
-        res = j["chart"]["result"][0]
-        q = res["indicators"]["quote"][0]
-        df = pd.DataFrame({"Open":q["open"],"High":q["high"],"Low":q["low"],"Close":q["close"],"Volume":q["volume"]})
-        df = df.dropna()
-        if len(df) < 50:
+        data = j.get("grapthData", [])
+        if not data or len(data) < 50:
             return None
+        df = pd.DataFrame(data, columns=["Time","Close"])
+        df["Open"] = df["Close"]
+        df["High"] = df["Close"]
+        df["Low"] = df["Close"]
+        df["Volume"] = 0
         return df
     except Exception as e:
-        print(f"Yahoo Error {symbol}: {e}")
+        print(f"NSE Error {symbol}: {e}")
         return None
 
 def get_df(symbol, period, interval):
     if symbol in BINANCE_MAP:
         return fetch_binance(symbol, interval)
-    if symbol in YAHOO_MAP:
-        return fetch_yahoo(symbol, interval)
+    if symbol in ["NIFTY", "BANKNIFTY"]:
+        return fetch_nse(symbol, interval)
     return None
 
 def analyze_one_tf(symbol, tf):

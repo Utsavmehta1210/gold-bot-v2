@@ -18,7 +18,7 @@ def home():
     return "V3 Bot Running"
 
 TRADES_FILE = "trades.json"
-SYMBOLS = ["GOLD", "BTC", "ETH", "NIFTY", "BANKNIFTY"]
+SYMBOLS = ["GOLD", "BTC", "ETH"]
 
 def load_trades():
     if not os.path.exists(TRADES_FILE):
@@ -44,31 +44,17 @@ def send(msg):
         print("Send Error:", e)
 
 def get_live_price(symbol):
-    ticker_map = {"GOLD": "GC=F","BTC": "BTC-USD","ETH": "ETH-USD","NIFTY": "^NSEI","BANKNIFTY": "^NSEBANK"}
-    ticker = ticker_map.get(symbol)
-    if not ticker:
+    m = {"GOLD": "PAXGUSDT", "BTC": "BTCUSDT", "ETH": "ETHUSDT"}
+    s = m.get(symbol)
+    if not s:
         return None
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        for base in ["query1", "query2"]:
-            try:
-                url = f"https://{base}.finance.yahoo.com/v8/finance/chart/{ticker}?range=1d&interval=5m"
-                r = requests.get(url, headers=headers, timeout=15)
-                if r.status_code != 200:
-                    continue
-                j = r.json()
-                res = j.get("chart", {}).get("result", [])
-                if not res:
-                    continue
-                closes = res[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
-                closes = [c for c in closes if c is not None]
-                if closes:
-                    return round(float(closes[-1]), 3)
-            except:
-                continue
-        return None
+        r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={s}", timeout=10)
+        if r.status_code == 200:
+            return round(float(r.json()["price"]), 3)
     except:
-        return None
+        pass
+    return None
 
 def daily_report():
     trades = load_trades()
@@ -97,26 +83,4 @@ def daily_report():
     return (f"📊 <b>DAILY REPORT - {today}</b>\n\n"
             f"Total Trades: {total}\n"
             f"✅ Win: {len(wins)} | ❌ Loss: {len(losses)}\n"
-            f"🏆 Win %: {win_pct}%\n"
-            f"💰 Total PnL: {total_pnl:.3f}\n\n"
-            f"<b>--- DETAIL ---</b>\n" + "\n".join(lines))
-
-def check_results():
-    trades = load_trades()
-    changed = False
-    for t in trades:
-        if t.get("status") != "OPEN":
-            continue
-        price = get_live_price(t["symbol"])
-        if price is None:
-            continue
-        if t["type"] == "BUY":
-            if price <= t["sl"]:
-                pnl = round(t["sl"] - t["entry"], 3)
-                t["status"] = "LOSS"
-                t["pnl"] = pnl
-                changed = True
-                send(f"❌ <b>{t['symbol']} LOSS - SL HIT</b>\nEntry {t['entry']:.3f} -> SL {t['sl']:.3f}\n💸 Loss: {pnl:.3f}\nLive: {price:.3f}")
-            elif price >= t["tp1"]:
-                pnl = round(t["tp1"] - t["entry"], 3)
-               
+            f"🏆 Win %

@@ -1,6 +1,7 @@
 import time
 import threading
 import yfinance as yf
+import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from brain import analyze
@@ -10,7 +11,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 BOT_TOKEN = os.getenv("BOT_TOKEN", "PASTE_YAHAN_APNA_TOKEN")
 
 # --- RENDER FREE WEB SERVICE KE LIYE PORT FIX ---
-# Ye chhota server Render ko dikhayega ki Port khula hai, taaki Deploy Fail na ho
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -74,19 +74,68 @@ def make_report():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CHAT_IDS.add(update.effective_chat.id)
-    await update.message.reply_text("Bot ON hai bhai ✅\nSignal aayenge - Entry + SL + Target ke saath\n/report likh ke report dekh sakta hai")
+    await update.message.reply_text("Bot ON hai bhai ✅\nSignal aayenge - Entry + SL + Target ke saath\n/report likh ke report dekh sakta hai\n/price likh ke live price dekh sakta hai")
 
 async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CHAT_IDS.add(update.effective_chat.id)
     await update.message.reply_text(make_report())
 
+# --- NAYA: /price, /status, /testtrade ---
+async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    CHAT_IDS.add(update.effective_chat.id)
+    txt = "💰 LIVE PRICE 💰\n\n"
+    for name, ticker in SYMBOLS.items():
+        p = get_live_price(ticker)
+        if p:
+            txt += f"{name}: {p:.2f}\n"
+        else:
+            txt += f"{name}: Price nahi mila (Market band?)\n"
+    await update.message.reply_text(txt)
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    CHAT_IDS.add(update.effective_chat.id)
+    active = [k for k,v in active_trades.items() if v is not None]
+    txt = f"Bot ON hai ✅\nScanner chal raha hai...\nActive Trades: {active if active else 'Koi nahi, Setup ka wait ho raha hai'}"
+    await update.message.reply_text(txt)
+
+async def testtrade_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    CHAT_IDS.add(update.effective_chat.id)
+    await update.message.reply_text("🔥 TEST TRADE 🔥\nGOLD BUY @ 3555\nSL: 3540 | TP: 3580\n\nAgar ye aaya matlab Trade bhejne wala system OK hai ✅")
+
+# --- NIFTY / BANKNIFTY KE LIYE 3 OPTION PRICE ---
 def get_live_price(ticker):
+    # Option 1: yfinance
     try:
         df = yf.download(ticker, interval="1m", period="1d", progress=False, auto_adjust=True)
-        if df is None or len(df) == 0:
-            return None
-        return float(df['Close'].iloc[-1])
-    except:
+        if df is not None and len(df) > 0:
+            price = float(df['Close'].iloc[-1])
+            print(f"Price {ticker} from yfinance: {price}")
+            return price
+    except Exception as e:
+        print(f"yfinance fail {ticker}: {e}")
+
+    # Option 2: Yahoo Chart API Direct
+    try:
+        # ^ ko %5E me convert karna padta hai URL ke liye
+        sym = ticker.replace("^", "%5E").replace("=", "%3D")
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1m&range=1d"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=10)
+        result = r.json()['chart']['result'][0]
+        price = float(result['meta']['regularMarketPrice'])
+        print(f"Price {ticker} from Yahoo API: {price}")
+        return price
+    except Exception as e:
+        print(f"Yahoo API fail {ticker}: {e}")
+
+    # Option 3: yfinance fast_info (Last Try)
+    try:
+        t = yf.Ticker(ticker)
+        price = float(t.fast_info['lastPrice'])
+        print(f"Price {ticker} from fast_info: {price}")
+        return price
+    except Exception as e:
+        print(f"fast_info fail {ticker}: {e}")
         return None
 
 def scanner_loop(app):
@@ -144,6 +193,8 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("report", report_cmd))
+    app.add_handler(CommandHandler("price", price_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("testtrade", testtrade_cmd))
     print("Bot Started...")
-    # YE LINE FIX HAI - Conflict error dobara nahi aayega
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)

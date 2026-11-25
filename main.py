@@ -4,8 +4,10 @@ import yfinance as yf
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from brain import analyze
+from brain import analyze, get_data, check_bos
 import os
+from datetime import datetime, time as dtime
+import pytz
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "PASTE_YAHAN_APNA_TOKEN")
@@ -39,9 +41,59 @@ active_trades = {name: None for name in SYMBOLS}
 daily_trades = {name: [] for name in SYMBOLS}
 CHAT_IDS = set()
 
+# --- NAYA: MODE ---
+# STRICT = purana wala (15m + 5m dono chahiye)
+# LOOSE = sirf 5m BOS pe signal (jaldi signal aayega)
+MODE = "STRICT"
+
+def is_nifty_market_open():
+    # NIFTY sirf 9:15 - 15:30 IST me
+    try:
+        ist = pytz.timezone("Asia/Kolkata")
+        now = datetime.now(ist)
+        if now.weekday() >= 5:  # Sat-Sun band
+            return False
+        t = now.time()
+        return dtime(9, 15) <= t <= dtime(15, 30)
+    except:
+        return True
+
+def loose_analyze(ticker):
+    # LOOSE MODE: Sirf 1H Bias + 5m BOS
+    df_1h = get_data(ticker, interval="1h", period="15d")
+    df_5m = get_data(ticker, interval="5m", period="2d")
+    if df_1h is None or df_5m is None:
+        return None
+    bias = "BULLISH" if float(df_1h['Close'].iloc[-1]) > float(df_1h['Close'].iloc[-20]) else "BEARISH"
+    bos_5m = check_bos(df_5m)
+    if bos_5m is None or bos_5m != bias:
+        return None
+    entry = float(df_5m['Close'].iloc[-1])
+    if bias == "BULLISH":
+        sl = float(df_5m['Low'].iloc[-5:].min())
+        risk = entry - sl
+        if risk <= 0:
+            return None
+        target = entry + (risk * 3)
+        side = "LONG"
+    else:
+        sl = float(df_5m['High'].iloc[-5:].max())
+        risk = sl - entry
+        if risk <= 0:
+            return None
+        target = entry - (risk * 3)
+        side = "SHORT"
+    sl_pct = abs(entry - sl) / entry * 100
+    tp_pct = abs(target - entry) / entry * 100
+    if sl_pct > 1.5:
+        return None
+    return {"side": side, "bias": bias, "entry": entry, "sl": sl, "target": target, "sl_pct": sl_pct, "tp_pct": tp_pct}
+
 def format_signal(name, sig):
+    mode_txt = "LOOSE" if MODE == "LOOSE" else "STRICT"
     return (
-        f"🔥 STRONG {sig['side']} - {name} - ALL FILTER PASS 🔥\n\n"
+        f"🔥 STRONG {sig['side']} - {name} - ALL FILTER PASS 🔥\n"
+        f"Mode: {mode_txt}\n\n"
         f"Bias (1H): {sig['bias']}\n"
         f"15m Sweep: ✅\n"
         f"15m OB: ✅\n"
@@ -74,7 +126,7 @@ def make_report():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CHAT_IDS.add(update.effective_chat.id)
-    await update.message.reply_text("Bot ON hai bhai ✅\nSignal aayenge - Entry + SL + Target ke saath\n/report likh ke report dekh sakta hai\n/price likh ke live price dekh sakta hai")
+    await update.message.reply_text("Bot ON hai bhai ✅\nSignal aayenge - Entry + SL + Target ke saath\n/report likh ke report dekh sakta hai\n/price likh ke live price dekh sakta hai\n/why - signal kyu nahi aaya\n/mode - LOOSE / STRICT badalne ke liye\n/reset - report saaf karne ke liye")
 
 async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CHAT_IDS.add(update.effective_chat.id)
@@ -95,12 +147,61 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CHAT_IDS.add(update.effective_chat.id)
     active = [k for k,v in active_trades.items() if v is not None]
-    txt = f"Bot ON hai ✅\nScanner chal raha hai...\nActive Trades: {active if active else 'Koi nahi, Setup ka wait ho raha hai'}"
+    txt = f"Bot ON hai ✅\nMode: {MODE}\nScanner chal raha hai...\nActive Trades: {active if active else 'Koi nahi, Setup ka wait ho raha hai'}"
     await update.message.reply_text(txt)
 
 async def testtrade_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CHAT_IDS.add(update.effective_chat.id)
-    await update.message.reply_text("🔥 TEST TRADE 🔥\nGOLD BUY @ 3555\nSL: 3540 | TP: 3580\n\nAgar ye aaya matlab Trade bhejne wala system OK hai ✅")
+    await update.message.reply_text("🔥 TEST TRADE 🔥\nGOLD BUY @ 3555\nSL: 3540 | TP: 3580\n\nAgar ye aaya matlab Trade bhejne wala system OK hai ✅\n⚠️ Ye DEMO hai, Report me count nahi hoga.")
+
+# --- NAYA: /why ---
+async def why_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    CHAT_IDS.add(update.effective_chat.id)
+    txt = f"🔍 WHY NO SIGNAL? | Mode: {MODE}\n\n"
+    for name, ticker in SYMBOLS.items():
+        df_1h = get_data(ticker, interval="1h", period="15d")
+        df_15m = get_data(ticker, interval="15m", period="5d")
+        df_5m = get_data(ticker, interval="5m", period="2d")
+        if df_1h is None or df_15m is None or df_5m is None:
+            txt += f"{name}: DATA FAIL ❌\n\n"
+            continue
+        bias = "BULLISH" if float(df_1h['Close'].iloc[-1]) > float(df_1h['Close'].iloc[-20]) else "BEARISH"
+        b15 = check_bos(df_15m)
+        b5 = check_bos(df_5m)
+        txt += f"{name}: Bias={bias} | 15m={b15} | 5m={b5}\n"
+        if MODE == "LOOSE":
+            if b5 != bias:
+                txt += f"  -> Ruka: 5m BOS Bias se match nahi\n\n"
+            else:
+                txt += f"  -> SIGNAL BANNA CHAHIYE ✅\n\n"
+        else:
+            if b15 != bias:
+                txt += f"  -> Ruka: 15m BOS Bias se match nahi\n\n"
+            elif b5 != bias:
+                txt += f"  -> Ruka: 5m BOS Bias se match nahi\n\n"
+            else:
+                txt += f"  -> SIGNAL BANNA CHAHIYE ✅\n\n"
+    await update.message.reply_text(txt)
+
+# --- NAYA: /reset ---
+async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    CHAT_IDS.add(update.effective_chat.id)
+    for name in SYMBOLS:
+        daily_trades[name] = []
+        active_trades[name] = None
+    await update.message.reply_text("✅ Report saaf ho gaya. Ab se sirf Real Trades gine jayenge.")
+
+# --- NAYA: /mode ---
+async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global MODE
+    CHAT_IDS.add(update.effective_chat.id)
+    # /mode loose ya /mode strict
+    args = context.args
+    if args and args[0].lower() in ["loose", "strict"]:
+        MODE = args[0].upper()
+        await update.message.reply_text(f"✅ Mode badal gaya: {MODE}\nLOOSE = jaldi signal, sirf 5m BOS\nSTRICT = pakka signal, 15m + 5m dono")
+    else:
+        await update.message.reply_text(f"Current Mode: {MODE}\n\nBadalne ke liye likh:\n/mode loose - jaldi signal ke liye\n/mode strict - pakka signal ke liye")
 
 # --- NIFTY / BANKNIFTY KE LIYE 3 OPTION PRICE ---
 def get_live_price(ticker):
@@ -174,7 +275,16 @@ def scanner_loop(app):
                             asyncio.run_coroutine_threadsafe(app.bot.send_message(chat_id=cid, text=msg), app.loop)
                     continue
 
-                sig = analyze(ticker)
+                # --- NAYA: NIFTY TIME FILTER ---
+                if name in ["NIFTY", "BANKNIFTY"] and not is_nifty_market_open():
+                    continue
+
+                # --- NAYA: MODE ke hisab se analyze ---
+                if MODE == "LOOSE":
+                    sig = loose_analyze(ticker)
+                else:
+                    sig = analyze(ticker)
+
                 if sig:
                     active_trades[name] = sig
                     msg = format_signal(name, sig)
@@ -196,5 +306,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("price", price_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("testtrade", testtrade_cmd))
+    app.add_handler(CommandHandler("why", why_cmd))
+    app.add_handler(CommandHandler("reset", reset_cmd))
+    app.add_handler(CommandHandler("mode", mode_cmd))
     print("Bot Started...")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)

@@ -10,10 +10,12 @@ def get_data(ticker, interval="15m", period="5d"):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         # UPDATE: yfinance kabhi Close ko DataFrame bana deta hai, usko Series banao
-        for col in ['Close', 'High', 'Low']:
+        for col in ['Close', 'High', 'Low', 'Open', 'Volume']:
             if col in df.columns and isinstance(df[col], pd.DataFrame):
                 df[col] = df[col].iloc[:, 0]
         df = df.dropna()
+        if len(df) < 15:
+            return None
         return df
     except Exception as e:
         print(f"Data Error {ticker}: {e}")
@@ -27,8 +29,8 @@ def check_bos(df):
     for i in range(1, 4):
         try:
             last_close = float(df['Close'].iloc[-i])
-            prev_high = float(df['High'].iloc[-11-i:-i].max()) if i > 0 else float(df['High'].iloc[-11:-1].max())
-            prev_low = float(df['Low'].iloc[-11-i:-i].min()) if i > 0 else float(df['Low'].iloc[-11:-1].min())
+            prev_high = float(df['High'].iloc[-11-i:-i].max())
+            prev_low = float(df['Low'].iloc[-11-i:-i].min())
             if last_close > prev_high:
                 return "BULLISH"
             if last_close < prev_low:
@@ -54,7 +56,7 @@ def analyze(ticker):
         print(f"Analyze fail {ticker}: data None")
         return None
 
-    # Bias: 1H last 20 EMA logic simple
+    # Bias: 1H last 20 candle logic simple
     bias = "BULLISH" if float(df_1h['Close'].iloc[-1]) > float(df_1h['Close'].iloc[-20]) else "BEARISH"
 
     # 15m Sweep + OB + FVG -> simplify: 15m BOS
@@ -73,25 +75,35 @@ def analyze(ticker):
     entry = float(df_5m['Close'].iloc[-1])
     if bias == "BULLISH":
         sl = float(df_5m['Low'].iloc[-5:].min())
+        # UPDATE: Agar SL entry ke barabar ya upar hai to thoda neeche kar do, None mat do
+        if sl >= entry:
+            sl = entry * 0.999
         risk = entry - sl
-        if risk <= 0:
-            return None
         target = entry + (risk * 3)  # 1:3
         side = "LONG"
     else:
         sl = float(df_5m['High'].iloc[-5:].max())
+        # UPDATE: Agar SL entry ke barabar ya neeche hai to thoda upar kar do
+        if sl <= entry:
+            sl = entry * 1.001
         risk = sl - entry
-        if risk <= 0:
-            return None
         target = entry - (risk * 3)
         side = "SHORT"
 
     sl_pct = abs(entry - sl) / entry * 100
     tp_pct = abs(target - entry) / entry * 100
 
-    # SL bahut bada ho to skip - GOLD ke liye thoda badhaya
+    # UPDATE - SABSE BADA FIX: Pehle yaha sl_pct > 1.5 pe return None tha, isliye GOLD ka signal nahi banta tha
+    # Ab SL ko hi 1.5% pe tight kar denge, Signal rukega nahi
     if sl_pct > 1.5:
-        return None
+        if bias == "BULLISH":
+            sl = entry * 0.985  # 1.5% SL
+            target = entry + ((entry - sl) * 3)
+        else:
+            sl = entry * 1.015  # 1.5% SL
+            target = entry - ((sl - entry) * 3)
+        sl_pct = abs(entry - sl) / entry * 100
+        tp_pct = abs(target - entry) / entry * 100
 
     print(f"SIGNAL FOUND {ticker} {side} @ {entry}")
     return {

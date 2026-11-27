@@ -2,6 +2,7 @@ import time
 import threading
 import yfinance as yf
 import requests
+import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from brain import analyze, get_data, check_bos
@@ -40,6 +41,9 @@ SYMBOLS = {
 active_trades = {name: None for name in SYMBOLS}
 daily_trades = {name: [] for name in SYMBOLS}
 CHAT_IDS = set()
+
+# UPDATE 1: GOLD wala msg fix ke liye BOT_LOOP
+BOT_LOOP = None
 
 # FIX 2: Deploy pe bhi LOOSE hi rahe, taaki baar-baar /mode loose na likhna pade
 MODE = "LOOSE"
@@ -125,9 +129,24 @@ def make_report():
     txt += f"TOTAL:\nWin: {total_wins} | Loss: {total_losses}\nWin %: {total_win_pct:.1f}%\nPnL: {total_pnl:+.2f}%"
     return txt
 
+# UPDATE 2: Scanner se msg bhejne ka safe tarika - GOLD wala fix
+def send_to_all(app, msg):
+    if not CHAT_IDS:
+        print(f"SEND SKIP - CHAT_IDS khali hai, msg: {msg[:50]}")
+        return
+    if BOT_LOOP is None:
+        print(f"SEND FAIL - BOT_LOOP None hai")
+        return
+    for cid in list(CHAT_IDS):
+        try:
+            asyncio.run_coroutine_threadsafe(app.bot.send_message(chat_id=cid, text=msg), BOT_LOOP)
+            print(f"SENT to {cid}: {msg[:50]}")
+        except Exception as e:
+            print(f"SEND FAIL {cid}: {e}")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CHAT_IDS.add(update.effective_chat.id)
-    await update.message.reply_text("Bot ON hai bhai ✅\nSignal aayenge - Entry + SL + Target ke saath\n/report likh ke report dekh sakta hai\n/price likh ke live price dekh sakta hai\n/why - signal kyu nahi aaya\n/mode - LOOSE / STRICT badalne ke liye\n/reset - report saaf karne ke liye")
+    await update.message.reply_text("Bot ON hai bhai ✅\nSignal aayenge - Entry + SL + Target ke saath\n/report likh ke report dekh sakta hai\n/price likh ke live price dekh sakta hai\n/why - signal kyu nahi aaya\n/mode - LOOSE / STRICT badalne ke liye\n/reset - report saaf karne ke liye\n/scan - abhi turant scan karne ke liye")
 
 async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CHAT_IDS.add(update.effective_chat.id)
@@ -147,7 +166,7 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CHAT_IDS.add(update.effective_chat.id)
     active = [k for k,v in active_trades.items() if v is not None]
-    txt = f"Bot ON hai ✅\nMode: {MODE}\nScanner chal raha hai...\nActive Trades: {active if active else 'Koi nahi, Setup ka wait ho raha hai'}"
+    txt = f"Bot ON hai ✅\nMode: {MODE}\nScanner chal raha hai...\nActive Trades: {active if active else 'Koi nahi, Setup ka wait ho raha hai'}\nChat IDs: {len(CHAT_IDS)} | BOT_LOOP: {'OK' if BOT_LOOP is not None else 'FAIL ❌'}"
     await update.message.reply_text(txt)
 
 async def testtrade_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -196,6 +215,25 @@ async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"Current Mode: {MODE}\n\nBadalne ke liye likh:\n/mode loose - jaldi signal ke liye\n/mode strict - pakka signal ke liye")
 
+# UPDATE 3: /scan add kiya - pehle tha hi nahi isliye reply nahi aata tha
+async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    CHAT_IDS.add(update.effective_chat.id)
+    await update.message.reply_text("🔍 Scan shuru... GOLD / BTC dekh raha hu, 15 sec ruk ja")
+    for name in ["GOLD", "BTC"]:
+        ticker = SYMBOLS[name]
+        try:
+            if MODE == "LOOSE":
+                sig = loose_analyze(ticker)
+            else:
+                sig = analyze(ticker)
+            if sig:
+                await update.message.reply_text(format_signal(name, sig))
+            else:
+                await update.message.reply_text(f"{name}: Abhi Setup nahi bana ❌")
+        except Exception as e:
+            await update.message.reply_text(f"{name}: Error - {e}")
+    await update.message.reply_text("✅ Scan khatam")
+
 def get_live_price(ticker):
     try:
         df = yf.download(ticker, interval="1m", period="1d", progress=False, auto_adjust=True)
@@ -233,9 +271,9 @@ def get_live_price(ticker):
         return None
 
 def scanner_loop(app):
-    import asyncio
     while True:
         try:
+            print(f"Scanner tick... CHAT_IDS={CHAT_IDS} MODE={MODE} BOT_LOOP={'OK' if BOT_LOOP else 'None'}")
             for name, ticker in SYMBOLS.items():
                 if active_trades[name] is not None:
                     trade = active_trades[name]
@@ -263,8 +301,7 @@ def scanner_loop(app):
                         active_trades[name] = None
                         emoji = "✅" if hit == "TP" else "❌"
                         msg = f"{emoji} {hit} HIT - {trade['side']} - {name} {emoji}\nPnL: {pnl:+.2f}%"
-                        for cid in list(CHAT_IDS):
-                            asyncio.run_coroutine_threadsafe(app.bot.send_message(chat_id=cid, text=msg), app.loop)
+                        send_to_all(app, msg)
                     continue
                 if name in ["NIFTY", "BANKNIFTY"] and not is_nifty_market_open():
                     continue
@@ -275,14 +312,17 @@ def scanner_loop(app):
                 if sig:
                     active_trades[name] = sig
                     msg = format_signal(name, sig)
-                    for cid in list(CHAT_IDS):
-                        asyncio.run_coroutine_threadsafe(app.bot.send_message(chat_id=cid, text=msg), app.loop)
+                    print(f"SENDING SIGNAL {name} to {CHAT_IDS}")
+                    send_to_all(app, msg)
             time.sleep(60)
         except Exception as e:
             print(f"Scanner Error: {e}")
             time.sleep(60)
 
 async def post_init(app):
+    global BOT_LOOP
+    BOT_LOOP = asyncio.get_running_loop()
+    print(f"BOT_LOOP SET: {BOT_LOOP}")
     t = threading.Thread(target=scanner_loop, args=(app,), daemon=True)
     t.start()
 
@@ -296,5 +336,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("why", why_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("mode", mode_cmd))
+    app.add_handler(CommandHandler("scan", scan_cmd))
     print("Bot Started...")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)

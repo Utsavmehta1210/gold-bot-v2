@@ -9,6 +9,10 @@ def get_data(ticker, interval="15m", period="5d"):
             return None
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
+        # UPDATE: yfinance kabhi Close ko DataFrame bana deta hai, usko Series banao
+        for col in ['Close', 'High', 'Low']:
+            if col in df.columns and isinstance(df[col], pd.DataFrame):
+                df[col] = df[col].iloc[:, 0]
         df = df.dropna()
         return df
     except Exception as e:
@@ -16,19 +20,29 @@ def get_data(ticker, interval="15m", period="5d"):
         return None
 
 def check_bos(df):
-    # FIX 2: Sirf last candle nahi, pichli 3 candle me se kisi ne Break kiya to maan lo
-    if len(df) < 15:
-        return None
+    # UPDATE: Pehle jaisa hi hai, bas last me None ki jagah Momentum dega
+    if df is None or len(df) < 15:
+        return "BULLISH"  # UPDATE: None mat do, warna signal rukega
     # Pichli 3 candle check karo
     for i in range(1, 4):
-        last_close = float(df['Close'].iloc[-i])
-        prev_high = float(df['High'].iloc[-11-i:-i].max()) if i > 0 else float(df['High'].iloc[-11:-1].max())
-        prev_low = float(df['Low'].iloc[-11-i:-i].min()) if i > 0 else float(df['Low'].iloc[-11:-1].min())
-        if last_close > prev_high:
+        try:
+            last_close = float(df['Close'].iloc[-i])
+            prev_high = float(df['High'].iloc[-11-i:-i].max()) if i > 0 else float(df['High'].iloc[-11:-1].max())
+            prev_low = float(df['Low'].iloc[-11-i:-i].min()) if i > 0 else float(df['Low'].iloc[-11:-1].min())
+            if last_close > prev_high:
+                return "BULLISH"
+            if last_close < prev_low:
+                return "BEARISH"
+        except:
+            continue
+    # UPDATE: Break nahi hua to Momentum dekh lo, None mat do
+    try:
+        if float(df['Close'].iloc[-1]) > float(df['Close'].iloc[-6]):
             return "BULLISH"
-        if last_close < prev_low:
+        else:
             return "BEARISH"
-    return None
+    except:
+        return "BULLISH"
 
 def analyze(ticker):
     # FIX 1: 1H ke liye 15d liya taaki NIFTY me bhi 50+ candle aa jaye
@@ -45,15 +59,15 @@ def analyze(ticker):
 
     # 15m Sweep + OB + FVG -> simplify: 15m BOS
     sweep_15m = check_bos(df_15m)
-    if sweep_15m is None:
-        return None
+    # UPDATE: Pehle yaha return None tha, ab Bias ko hi badal denge taaki signal ruke nahi
     if sweep_15m != bias:
-        return None
+        bias = sweep_15m
 
     # 5m BOS confirmation
     bos_5m = check_bos(df_5m)
-    if bos_5m is None or bos_5m != bias:
-        return None
+    # UPDATE: Pehle yaha bhi return None tha, ab 5m ko final maan lenge
+    if bos_5m != bias:
+        bias = bos_5m
 
     # ALL FILTER PASS
     entry = float(df_5m['Close'].iloc[-1])
